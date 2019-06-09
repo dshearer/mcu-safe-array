@@ -10,9 +10,7 @@ ARRAY_HEADER_PATH = os.path.join(os.path.dirname(PROGAM_PATH), '..', 'array.h')
 SOURCE_TEMPLATE = '''
 #include "{array_h_path}"
 
-using safearray::Array;
-using safearray::Slice;
-using safearray::CSlice;
+using namespace safearray;
 
 int main() {{
     {case_source}

@@ -1,6 +1,70 @@
 #ifndef __MCU_SAFE_ARRAY_H__
 #define __MCU_SAFE_ARRAY_H__
 
+/**
+ * \mainpage
+ * 
+ * This library contains class templates that help with writing memory-safe
+ * programs that manipulate arrays of data.  It uses C++11 features to do
+ * compile-time bounds checking and thus adds minimal runtime overhead.
+ * 
+ * Here's an example of using it to parse messages received over a network:
+ * 
+ * \code
+ * typedef enum { HELLO, BYE } msg_type_t;
+ * 
+ * struct HelloMsg
+ * {
+ *     msg_type_t                 type;
+ *     safearray::Array<char, 32> my_name[32];
+ *     unsigned                   my_id;
+ *     safearray::ByteArray<32>   hmac[32];
+ * };
+ * 
+ * struct ByeMsg
+ * {
+ *     msg_type_t               type;
+ *     safearray::ByteArray<32> hmac[32];
+ * };
+ * 
+ * #define MAX_MSG_SIZE (sizeof(HelloMsg) > sizeof(ByeMsg) ? \
+ *      sizeof(HelloMsg) : sizeof(ByeMsg))
+ * 
+ * static safearray::ByteArray<MAX_MSG_SIZE> g_buff;
+ * 
+ * void radio_recv() {
+ *      // copy data from low-level API into g_buff
+ *      lowlevel_recv(g_buff.data(), g_buff.size());
+ * 
+ *      // temporarily cast to msg_type_t to read msg type
+ *      const msg_type_t *type = safearray::cast<msg_type_t>(g_buff);
+ *      switch (type) {
+ *          case HELLO: {
+ *              const HelloMsg *msg = safearray::cast<HelloMsg>(g_buff);
+ *              process_hello(msg);
+ *              break;
+ *          }
+ * 
+ *          case BYE: {
+ *              const ByeMsg *msg = safearray::cast<ByeMsg>(g_buff);
+ *              process_bye(msg);
+ *              break;
+ *          }
+ *      }
+ * }
+ * \endcode
+ * 
+ * The two structs define the on-the-wire format of the messages.
+ * As you can see, \c safearray::Array and \c safearray::ByteArray can be
+ * used in these struts because they take up the same amount of space as
+ * C arrays.
+ * 
+ * \c radio_recv uses \c safearray::cast to interpret the bytes stored
+ * in the static array \c g_buff.  \c safearray::cast statically checks
+ * that the buffer is large enough to store instances of the requested
+ * type.
+ */
+
 #include <stddef.h>
 #include <string.h>
 
@@ -21,13 +85,19 @@ namespace safearray {
 /**
  * \brief A pointer to an array with a size.
  * 
- * The size is known only at runtime.  An instance is just a way to pass an
- * array and its size in one object.
+ * \tparam T The type of the elements of the array.
+ * 
+ * The size is known only at runtime, so no compile-time bounds-checking is
+ * done.  This is really just a way to pass an array and its size in one
+ * object.
  */
 template<typename T>
 class CArrayPtr
 {
 public:
+    /**
+     * \brief Make a pointer to an array.
+     */
     CArrayPtr(const T *data, size_t size): _data(data), _size(size) {}
 
     size_t size() const {
@@ -46,18 +116,22 @@ private:
 /** 
  * \brief A const pointer to a section of an array.
  * 
+ * \tparam T The type of the elements of the slice.
+ * \tparam L The size (i.e., number of instances of \c T) of the slice.
+ * 
  * The slice itself has a fixed length known at compile-time, which is
- * hopefully less than or equal to the size of the array.
+ * hopefully less than or equal to the size of the array.  Several methods do
+ * compile-time bounds-checking to ensure memory-safety.
  * 
  * NOTE: Since a slice is a pointer, it's possible to give it a value
- * of NULL, which is what the default constructor does.
+ * of \c NULL, which is what the default constructor does.
  */
 template<typename T, size_t L>
 class CSlice
 {
 public:
     /**
-     * Make a slice pointing to nothing (NULL).
+     * \brief Make a slice pointing to nothing (\c NULL).
      * 
      * WARNING: Most of the other methods will have undefined behavior 
      * (and thus memory safety is not guaranteed) until this object is
@@ -66,22 +140,23 @@ public:
     CSlice() : _data(NULL) {};
 
     /**
-     * Make a slice pointing to L instances of T at the given location.
+     * \brief Make a slice pointing to \c L instances of \c T at the given
+     * location.
      * 
      * WARNING: This class provides memory-safety only if the given pointer
-     * points to L contiguous instances of T.
+     * points to \c L contiguous instances of \c T.
      */
     explicit CSlice(const T *data) : _data(data) {}
 
     /**
-     * \brief Get a pointer to the slice's data.
+     * \brief Get a pointer to the data.
      * 
-     * \tparam Offset An offset (in number of instances of T) to apply to the
+     * \tparam Offset An offset (in number of instances of \c T) to apply to the
      * pointer before returning it.  The value is statically checked to ensure
-     * memory-safety.  Default: 0.
+     * memory-safety.  Default: \c 0.
      * 
-     * \return P + Offset, where P is a pointer to the beginning of the slice's
-     * data.
+     * \return \c P + \c Offset, where \c P is a pointer to the beginning of
+     * the data.
      */
     template<size_t Offset = 0>
     const T *cdata() const {
@@ -90,34 +165,39 @@ public:
     }
 
     /**
+     * \brief Get the element at a particular index.
+     * 
      * WARNING: This method does no static or runtime bounds-checking.
      * 
-     * \param i An index.  If i >= L, the return value is undefined.
+     * \param i An index.  If \c i \c >= \c L, the return value is undefined.
      * 
-     * \return A reference to the element at index i.
+     * \return A reference to the element at index \c i.
      */
     const T& operator[](size_t i) const {
         return this->_data[i];
     }
 
     /**
-     * \return A CArrayPtr to the slice's data.
+     * Make a pointer to the data.
+     * 
+     * \return A \c CArrayPtr to the data.
      */
     CArrayPtr<T> operator&() const {
         return CArrayPtr<T>(this->_data, L);
     }
 
     /**
-     * Make a smaller slice.
+     * \brief Make a slice pointing to a section of the data.
      * 
      * The bounds given as template params are statically checked to ensure
      * memory-safety.
      * 
-     * \tparam Start The index of the first element in the slice.  Default: 0.
+     * \tparam Start The index of the first element in the slice.  Default: \c 0.
      * \tparam End The next index after the index of the last element in the
-     * slice.  Default: L.
-     * \return A slice pointing from the element at index Start (inclusive) to
-     * the element at index End (exclusive).
+     * slice.  Default: \c L.
+     * 
+     * \return A slice pointing from the element at index \c Start (inclusive) to
+     * the element at index \c End (exclusive).
      */
     template<size_t Start = 0, size_t End = L>
     CSlice<T, End - Start> cslice() const {
@@ -126,13 +206,17 @@ public:
     }
 
     /**
-     * \return The number of instances of T in the slice.
+     * \brief Get the number of instances of \c T in the slice.
+     * 
+     * \return The number of instances of \c T in the slice.
      */
     constexpr static size_t size() {
         return L;
     }
 
     /**
+     * \brief Get the number of bytes used by the slice's data.
+     * 
      * \return The number of bytes used by the slice's data.
      */
     constexpr static size_t sizeBytes() {
@@ -146,18 +230,22 @@ protected:
 /** 
  * \brief A pointer to a section of an array.
  * 
+ * \tparam T The type of the elements of the slice.
+ * \tparam L The size (i.e., number of instances of \c T) of the slice.
+ * 
  * The slice itself has a fixed length known at compile-time, which is
- * hopefully less than or equal to the size of the array.
+ * hopefully less than or equal to the size of the array.  Several methods do
+ * compile-time bounds-checking to ensure memory-safety.
  * 
  * NOTE: Since a slice is a pointer, it's possible to give it a value
- * of NULL, which is what the default constructor does.
+ * of \c NULL, which is what the default constructor does.
  */
 template<typename T, size_t L>
 class Slice : public CSlice<T, L>
 {
 public:
     /**
-     * Make a slice pointing to nothing (NULL).
+     * \brief Make a slice pointing to nothing (\c NULL).
      * 
      * WARNING: Most of the other methods will have undefined behavior 
      * (and thus memory safety is not guaranteed) until this object is
@@ -166,19 +254,24 @@ public:
     Slice() : CSlice<T, L>() {};
 
     /**
-     * Make a slice pointing to L instances of T at the given location.
+     * \brief Make a slice pointing to \c L instances of \c T at the given location.
      * 
      * WARNING: This class provides memory-safety only if the given pointer
-     * points to L contiguous instances of T.
+     * points to \c L contiguous instances of \c T.
+     * 
+     * \param data A pointer to the beginning of the slice's data.
      */
     explicit Slice(T *data) : CSlice<T, L>(data) {}
 
     /**
-     * Get a pointer to the slice's data.
+     * \brief Get a pointer to the data.
      * 
-     * @tparam Offset An offset (in number of instances of T) to apply to the
-     * pointer before returning it.  The value is statically checked to ensure
-     * memory-safety.  Default: 0.
+     * \tparam Offset An offset (in number of instances of \c T) to apply to
+     * the pointer before returning it.  The value is statically checked to
+     * ensure memory-safety.  Default: \c 0.
+     * 
+     * \return \c P \c + \c Offset, where \c P is a pointer to the beginning
+     * of the slice's data.
      */
     template<size_t Offset = 0>
     T *data() {
@@ -186,7 +279,7 @@ public:
     }
 
     /**
-     * Fill the slice with the given value.
+     * \brief Fill with the given value.
      */
     void fill(T val) {
         for (size_t i = 0; i < L; ++i) {
@@ -195,7 +288,7 @@ public:
     }
 
     /**
-     * Copy data from a slice into this one.
+     * \brief Copy data from a slice.
      * 
      * \param data A slice from which to copy data.  Its size is statically
      * checked to ensure memory-safety.
@@ -207,29 +300,14 @@ public:
     }
 
     /**
-     * Get the element at the given index.
-     * 
-     * WARNING: This method does no static or runtime bounds-checking.
-     * 
-     * \param i An index.  If i >= L, the return value is undefined.
-     * 
-     * \return The element at index i.
+     * \copydoc CSlice::operator[]
      */
     T& operator[](size_t i) {
         return this->data()[i];
     }
 
     /**
-     * Make a smaller slice.
-     * 
-     * The bounds given as template params are statically checked to ensure
-     * memory-safety.
-     * 
-     * \tparam Start The index of the first element in the slice.  Default: 0.
-     * \tparam End The next index after the index of the last element in the
-     * slice.  Default: L.
-     * \return A slice pointing from the element at index Start (inclusive) to
-     * the element at index End (exclusive).
+     * \copydoc CSlice::cslice
      */
     template<size_t Start = 0, size_t End = L>
     Slice<T, End - Start> slice() {
@@ -241,6 +319,11 @@ public:
 /**
  * \brief An array with a fixed length known at compile-time.
  * 
+ * \tparam T The type of the elements of the array.
+ * \tparam L The size (i.e., number of instances of \c T) of the array.
+ * 
+ * Several methods do compile-time bounds-checking to ensure memory-safety.
+ * 
  * Instances take up the same amount of space as a regular C array.  Their
  * size in bytes can be retrieved with the "sizeof" operator.
  */
@@ -248,17 +331,28 @@ template<typename T, size_t L>
 class Array
 {
 public:
+    /**
+     * \brief This constructor is deleted to prevent accidental copies.
+     */
     Array(const Array& other) = delete;
+
+    /**
+     * \brief This constructor is deleted to prevent accidental copies.
+     */
     Array(Array& other) = delete;
+
+    /**
+     * \brief This method is deleted to prevent accidental copies.
+     */
     Array& operator=(const Array& other) = delete;
+
+    /**
+     * \brief This method is deleted to prevent accidental copies.
+     */
     Array& operator=(Array& other) = delete;
 
     /**
-     * Get a pointer to the array's data.
-     * 
-     * @tparam Offset An offset (in number of instances of T) to apply to the
-     * pointer before returning it.  The value is statically checked to ensure
-     * memory-safety.  Default: 0.
+     * \copydoc CSlice::cdata
      */
     template<size_t Offset = 0>
     const T *cdata() const {
@@ -267,11 +361,7 @@ public:
     }
 
     /**
-     * Get a pointer to the slice's data.
-     * 
-     * @tparam Offset An offset (in number of instances of T) to apply to the
-     * pointer before returning it.  The value is statically checked to ensure
-     * memory-safety.  Default: 0.
+     * \copydoc Slice::data
      */
     template<size_t Offset = 0>
     T *data() {
@@ -279,24 +369,14 @@ public:
     }
 
     /**
-     * WARNING: This method does no static or runtime bounds-checking.
-     * 
-     * \param i An index.  If i >= L, the return value is undefined.
-     * 
-     * \return The element at index i.
+     * \copydoc CSlice::operator[]
      */
     const T& operator[](size_t i) const {
         return this->_data[i];
     }
 
     /**
-     * Get the element at the given index.
-     * 
-     * WARNING: This method does no static or runtime bounds-checking.
-     * 
-     * \param i An index.  If i >= L, the return value is undefined.
-     * 
-     * \return The element at index i.
+     * \copydoc Slice::operator[]
      */
     T& operator[](size_t i) {
         return this->_data[i];
@@ -310,24 +390,21 @@ public:
     }
 
     /**
-     * \return The number of instances of T in the array.
+     * \copydoc CSlice::size
      */
     constexpr static size_t size() {
         return L;
     }
 
     /**
-     * Fill the array with the given value.
+     * \copydoc Slice::fill
      */
     void fill(T val) {
         this->slice().fill(val);
     }
 
     /**
-     * Copy data from a slice into this array.
-     * 
-     * \param data A slice from which to copy data.  Its size is statically
-     * checked to ensure memory-safety.
+     * \copydoc Slice::assign
      */
     template<size_t L2>
     void assign(CSlice<T, L2> data) {
@@ -336,16 +413,7 @@ public:
     }
 
     /**
-     * Make a slice of this array.
-     * 
-     * The bounds given as template params are statically checked to ensure
-     * memory-safety.
-     * 
-     * \tparam Start The index of the first element in the slice.  Default: 0.
-     * \tparam End The next index after the index of the last element in the
-     * slice.  Default: L.
-     * \return A slice pointing from the element at index Start (inclusive) to
-     * the element at index End (exclusive).
+     * \copydoc CSlice::cslice
      */
     template<size_t Start = 0, size_t End = L>
     CSlice<T, End - Start> cslice() const {
@@ -354,16 +422,7 @@ public:
     }
 
     /**
-     * Make a slice of this array.
-     * 
-     * The bounds given as template params are statically checked to ensure
-     * memory-safety.
-     * 
-     * \tparam Start The index of the first element in the slice.  Default: 0.
-     * \tparam End The next index after the index of the last element in the
-     * slice.  Default: L.
-     * \return A slice pointing from the element at index Start (inclusive) to
-     * the element at index End (exclusive).
+     * \copydoc Slice::slice
      */
     template<size_t Start = 0, size_t End = L>
     Slice<T, End - Start> slice() {
@@ -402,38 +461,58 @@ Slice<T, L1 - L2> operator<<(Slice<T, L1> dest, CSlice<T, L2> data) {
 }
 
 /**
- * Copy data from a slice into an array.
- * 
- * NOTE: Sizes are statically checked to ensure memory-safety.
- * 
- * \param dest The array into which to copy data.
- * \param data The slice from which to copy data.
- * 
- * \return A slice pointing to the section of the array that wasn't
- * written to.
+ * \copydoc operator<<
  */
 template<typename T, size_t L1, size_t L2>
 Slice<T, L1 - L2> operator<<(Array<T, L1>& dest, CSlice<T, L2> data) {
     return dest.slice() << data;
 }
 
+/**
+ * A pointer to a byte array.
+ */
 using CByteArrayPtr = CArrayPtr<unsigned char>;
 
+/**
+ * A constant slice of a byte array.
+ */
 template<size_t L>
 using CByteSlice = CSlice<unsigned char, L>;
 
+/**
+ * A slice of a byte array.
+ */
 template<size_t L>
 using ByteSlice = Slice<unsigned char, L>;
 
+/**
+ * A byte array.
+ */
 template<size_t L>
 using ByteArray = Array<unsigned char, L>;
 
+/**
+ * Cast the bytes in a byte array to another datatype.
+ * 
+ * The size of the array and the target datatype are statically compared to
+ * ensure memory-safety.
+ * 
+ * \tparam T The datatype to cast the bytes to.
+ * 
+ * \param array The array containing the byte that will be cast.
+ * 
+ * \return A pointer to be beginning of the array but cast to the specified
+ * datatype.
+ */
 template<typename T, size_t L>
 inline const T *cast(const ByteArray<L>& array) {
     static_assert(sizeof(T) <= sizeof(array), "Unsafe cast");
     return (const T *) array.cdata();
 }
 
+/**
+ * \copydoc cast
+ */
 template<typename T, size_t L>
 inline T *cast(ByteArray<L>& array) {
     const T *p = cast<T>((const ByteArray<L>&) array);
