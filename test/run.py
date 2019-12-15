@@ -5,7 +5,7 @@ import tempfile
 
 PROGAM_PATH = os.path.realpath(__file__)
 CASE_DIR_PATH = os.path.join(os.path.dirname(PROGAM_PATH), 'cases')
-ARRAY_HEADER_PATH = os.path.join(os.path.dirname(PROGAM_PATH), '..', 'array.h')
+ARRAY_HEADER_PATH = os.path.join(os.path.dirname(PROGAM_PATH), '..', 'mcu_safe_array.h')
 
 SOURCE_TEMPLATE = '''
 #include "{array_h_path}"
