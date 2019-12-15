@@ -6,39 +6,77 @@
  * 
  * This library contains class templates that help with writing memory-safe
  * programs that manipulate arrays of data.  It uses C++11 features to do
- * compile-time bounds checking and thus adds minimal runtime overhead.
+ * compile-time bounds checking and thus adds no runtime overhead in time or space.
  * 
- * Here's an example of using it to parse messages received over a network:
+ * Here are the classes
+ * <ul>
+ * <li>\c safearray::Array: An array with a fixed length known at compile-time.
+ * Equivalent to a C array.</li>
+ * 
+ * <li>\c safearray::Slice: A pointer to a section of a C array.  The length of the slice
+ * is known at compile-time.</li>
+ * 
+ * <li>\c safearray::CSlice: Like \c %safearray::Slice, but it points to a const C array.</li>
+ * 
+ * <li>\c safearray::CArrayPtr: A pointer to a const C array with a size known at runtime.
+ * This is really just a way to pass a C array and its size in one object.</li>
+ * </ul>
+ * 
+ * Here's an example of using \c %safearray::Array to parse messages received over a network.
+ * First, we define structs for the message types:
  * 
  * \code
  * typedef enum { HELLO, BYE } msg_type_t;
  * 
- * struct HelloMsg
- * {
- *     msg_type_t                 type;
- *     safearray::Array<char, 32> my_name[32];
- *     unsigned                   my_id;
- *     safearray::ByteArray<32>   hmac[32];
+ * struct HelloMsg {
+ *     msg_type_t                      type; // will be HELLO
+ *     safearray::Array<char, 20>      my_name;
+ *     uint32_t                        my_id;
+ *     safearray::Array<uint8_t, 32>   hmac;
  * };
  * 
- * struct ByeMsg
- * {
- *     msg_type_t               type;
- *     safearray::ByteArray<32> hmac[32];
+ * // sizeof(HelloMsg) == sizeof(msg_type_t) + sizeof(char) * 20 + 
+ * // sizeof(uint32_t) + sizeof(uint8_t) bytes * 32.
+ * 
+ * struct ByeMsg {
+ *     msg_type_t                    type; // will be BYE
+ *     safearray::Array<uint8_t, 32> hmac;
  * };
  * 
+ * // sizeof(ByteMsg) == sizeof(msg_type_t) + sizeof(uint8_t) * 32 bytes.
+ * \endcode
+ * 
+ * Note that \c %safearray::Array can be used as a field type, since it has
+ * the same size as a C array.
+ * 
+ * Now we define a global buffer for storing bytes received over the network:
+ * 
+ * \code
  * #define MAX_MSG_SIZE (sizeof(HelloMsg) > sizeof(ByeMsg) ? \
  *      sizeof(HelloMsg) : sizeof(ByeMsg))
  * 
- * static safearray::ByteArray<MAX_MSG_SIZE> g_buff;
+ * static safearray::Array<uint8_t, MAX_MSG_SIZE> g_buff;
+ * \endcode
  * 
+ * Assume that these functions are defined somewhere:
+ * 
+ * \code
+ * void lowlevel_recv(void *b, size_t len);
+ * void process_hello(const HelloMsg* msg);
+ * void process_bye(const ByeMsg* msg);
+ * \endcode
+ * 
+ * Finally, we define a function that parses messages:
+ * 
+ * \code
  * void radio_recv() {
  *      // copy data from low-level API into g_buff
  *      lowlevel_recv(g_buff.data(), g_buff.size());
  * 
- *      // temporarily cast to msg_type_t to read msg type
+ *      // temporarily cast to msg_type_t to read msg type (which is at
+ *      // the beginning of the buffer)
  *      const msg_type_t *type = safearray::cast<msg_type_t>(g_buff);
- *      switch (type) {
+ *      switch (*type) {
  *          case HELLO: {
  *              const HelloMsg *msg = safearray::cast<HelloMsg>(g_buff);
  *              process_hello(msg);
@@ -53,11 +91,6 @@
  *      }
  * }
  * \endcode
- * 
- * The two structs define the on-the-wire format of the messages.
- * As you can see, \c safearray::Array and \c safearray::ByteArray can be
- * used in these struts because they take up the same amount of space as
- * C arrays.
  * 
  * \c radio_recv uses \c safearray::cast to interpret the bytes stored
  * in the static array \c g_buff.  \c safearray::cast statically checks
@@ -83,12 +116,12 @@
 namespace safearray {
 
 /**
- * \brief A pointer to an array with a size.
+ * \brief A pointer to a const C array with a size known at runtime.
  * 
  * \tparam T The type of the elements of the array.
  * 
  * The size is known only at runtime, so no compile-time bounds-checking is
- * done.  This is really just a way to pass an array and its size in one
+ * done.  This is really just a way to pass a C array and its size in one
  * object.
  */
 template<typename T>
@@ -96,14 +129,27 @@ class CArrayPtr
 {
 public:
     /**
-     * \brief Make a pointer to an array.
+     * \brief Make a pointer to a const C array.
+     * 
+     * \param data A const C array
+     * \param size The number of instances of \c T in \c data
      */
     CArrayPtr(const T *data, size_t size): _data(data), _size(size) {}
 
+    /**
+     * \brief Get the size of the C array.
+     * 
+     * \return The number of instances of \c T in the array
+     */
     size_t size() const {
         return this->_size;
     }
 
+    /**
+     * \brief Get the C array.
+     * 
+     * \return The C array
+     */
     const T *data() const {
         return this->_data;
     }
@@ -114,13 +160,13 @@ private:
 };
 
 /** 
- * \brief A const pointer to a section of an array.
+ * \brief A const pointer to a section of a C array.
  * 
  * \tparam T The type of the elements of the slice.
  * \tparam L The size (i.e., number of instances of \c T) of the slice.
  * 
  * The slice itself has a fixed length known at compile-time, which is
- * hopefully less than or equal to the size of the array.  Several methods do
+ * (hopefully) less than or equal to the size of the array.  Several methods do
  * compile-time bounds-checking to ensure memory-safety.
  * 
  * NOTE: Since a slice is a pointer, it's possible to give it a value
@@ -228,13 +274,13 @@ protected:
 };
 
 /** 
- * \brief A pointer to a section of an array.
+ * \brief A pointer to a section of a C array.
  * 
  * \tparam T The type of the elements of the slice.
  * \tparam L The size (i.e., number of instances of \c T) of the slice.
  * 
  * The slice itself has a fixed length known at compile-time, which is
- * hopefully less than or equal to the size of the array.  Several methods do
+ * (hopefully) less than or equal to the size of the array.  Several methods do
  * compile-time bounds-checking to ensure memory-safety.
  * 
  * NOTE: Since a slice is a pointer, it's possible to give it a value
@@ -461,7 +507,7 @@ Slice<T, L1 - L2> operator<<(Slice<T, L1> dest, CSlice<T, L2> data) {
 }
 
 /**
- * \copydoc operator<<
+ * \copydoc safearray::operator<<(Slice<T, L1>, CSlice<T, L2>)
  */
 template<typename T, size_t L1, size_t L2>
 Slice<T, L1 - L2> operator<<(Array<T, L1>& dest, CSlice<T, L2> data) {
@@ -511,7 +557,7 @@ inline const T *cast(const ByteArray<L>& array) {
 }
 
 /**
- * \copydoc cast
+ * \copydoc safearray::cast(const ByteArray<L>&)
  */
 template<typename T, size_t L>
 inline T *cast(ByteArray<L>& array) {
